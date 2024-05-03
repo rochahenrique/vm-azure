@@ -1,0 +1,182 @@
+pip install azure-identity azure-mgmt-resource azure-mgmt-compute azure-mgmt-network
+
+#ID DO LOCATARIO
+%env AZURE_TENANT_ID=
+
+#ID DA ASSINATURA
+%env AZURE_SUBSCRIPTION_ID=
+
+#ID DE APLICATIVO
+%env AZURE_CLIENT_ID=
+
+#CHAVE SECRETA DO APLICATIVO
+%env AZURE_CLIENT_SECRET=
+
+import os
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.resource import ResourceManagementClient
+from azure.mgmt.compute import ComputeManagementClient
+from azure.mgmt.network import NetworkManagementClient
+
+
+assinatura = os.environ["AZURE_SUBSCRIPTION_ID"]
+
+credencial = DefaultAzureCredential()
+recurso_client = ResourceManagementClient(credencial, assinatura)
+comp_client = ComputeManagementClient(credencial, assinatura)
+rede_client = NetworkManagementClient(credencial, assinatura)
+
+grupo_nome ="python-vm"
+regiao = "brazilsouth" # opções brazilsouth, eastus, westus, etc
+
+grupo_config = {
+    "location": regiao,
+    "tags":{
+        "ambiente":"desenvolvimento",
+        "origem":"python"
+    }
+
+}
+
+grupo = recurso_client.resource_groups.create_or_update(grupo_nome, grupo_config)
+print(f"O grupo {grupo_nome} foi criado com sucesso!")
+
+#Passo 0: criar as variáveis iniciais
+
+grupo_nome = "prat-henrique"
+regiao = "brazilsouth"
+nsg_nome = "prathenrique-nsg"
+vnet_nome = "prathenrique-vnet"
+subrede_nome = "rede"
+ip_publico_nome = "prathenrique-ip"
+placa_nome= "prat-nic" #Network Interface Controller
+vm_nome = "prathenrique-vm"
+admin = "henriquerocha"
+senha = "Azure44444"
+
+# Passo 1: criar o grupo de recursos
+
+grupo_config ={
+    "location": regiao,
+
+}
+
+grupo = recurso_client.resource_groups.create_or_update(grupo_nome, grupo_config)
+print("O grupo de recursos foi criado: ", grupo_nome)
+
+# Passo 2: Criar a VNET
+
+vnet_config = {
+    "location" : regiao,
+    "address_space": {
+        "address_prefixes": ["10.0.0.0/16"]
+    }
+
+}
+
+#Para criar: grupo de recursos, o nome da vnet e a config
+
+implantacao = rede_client.virtual_networks.begin_create_or_update(grupo_nome, vnet_nome, vnet_config)
+
+#Espera a implementacao da Vnet finalizar
+vnet = implantacao.result()
+print("A VNET foi criada: ", vnet_nome)
+
+# Passo 3: Criar uma sub-rede na VNET
+subrede_config = {"address_prefix": "10.0.0.0/24"}
+
+# Para criar: grupo de recursos, vnet, nome da subrede e config
+implantacao = rede_client.subnets.begin_create_or_update(
+    grupo_nome, vnet_nome, subrede_nome, subrede_config
+)
+subrede = implantacao.result()
+print("Sub-rede criada: ", subrede_nome)
+
+# Passo 4: Criar o NSG
+regra_ssh = {
+    "name": "RDPRegra",
+    "protocol": "Tcp",
+    "direction": "Inbound", # Inbound | Outbound
+    "priority": 100,
+    "source_address_prefix": "*",
+    "source_port_range": "*",
+    "destination_address_prefix": "*",
+    "destination_port_range": "3389", # Porta do protocolo
+    "access": "Allow", # Allow | Block
+}
+nsg_config = {
+    "location": regiao,
+    "security_rules": [regra_ssh]
+}
+# Para criar: grupo de recursos, nome do nsg e config
+implantacao = rede_client.network_security_groups.begin_create_or_update(
+    grupo_nome, nsg_nome, nsg_config
+)
+
+nsg = implantacao.result()
+print("O grupo de segurança foi criado: ", nsg_nome)
+
+# Passo 5: Associar NSG a uma sub-rede
+subrede.network_security_group = nsg
+rede_client.subnets.begin_create_or_update (grupo_nome, vnet_nome, subrede_nome, subrede)
+print("Subrede associada ao NSG: ", nsg_nome)
+
+# Passo 6: Criar IP público
+ip_config = {"location": regiao}
+
+# Para criar: grupo de recursos, nome do IP e config
+implantacao = rede_client.public_ip_addresses.begin_create_or_update(
+    grupo_nome, ip_publico_nome, ip_config
+)
+
+ip_publico = implantacao.result()
+print("O IP público foi criado: ", ip_publico_nome)
+
+
+#Passo 7: criar uma NIC (Placa de rede)
+
+placa_config = {
+    "location" : regiao,
+    "ip_configurations":[
+        {"name" : placa_nome,"subnet":subrede, "public_ip_address": ip_publico}
+
+    ]
+}
+
+implantacao = rede_client.network_interfaces.begin_create_or_update(
+    grupo_nome, placa_nome, placa_config
+)
+
+placa = implantacao.result()
+print("A interface de rede foi criada:", placa_nome)
+
+# Passo 8: Criar uma VM
+vm_tamanho = "Standard_B2s"
+
+# Para acessar outras informações de images: https://az-vm-image.info/
+imagem_windows = {
+    "publisher": "MicrosoftWindowsServer",
+    "offer": "WindowsServer",
+    "sku": "2019-datacenter-gensecond",
+    "version": "latest",
+}
+perfil = {
+    "computer_name": vm_nome,
+    "admin_username": admin,
+    "admin_password": senha
+}
+vm_config = {
+    "location": regiao,
+    "storage_profile": {"image_reference": imagem_windows},
+    "hardware_profile": {"vm_size": vm_tamanho},
+    "os_profile": perfil,
+    "network_profile": {"network_interfaces": [placa]}
+}
+# Para criar: grupo de recursos, nome da VM e a config
+implantacao = comp_client.virtual_machines.begin_create_or_update(
+    grupo_nome, vm_nome, vm_config
+)
+vm = implantacao.result()
+print("A máquina foi criada: ", vm_nome)
+
+
